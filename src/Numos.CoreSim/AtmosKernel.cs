@@ -476,10 +476,8 @@ internal sealed partial class AtmosKernel : IDisposable
 
         float pressureDelta = currentPressure - neighborPressure;
 
-        float absDelta = pressureDelta > 0 ? pressureDelta : -pressureDelta; // TODO PERF MathF.Abs trollhaps
         // Update max observed pressure if necessary.
-        if (absDelta > maxPressureDelta)
-            maxPressureDelta = absDelta;
+        maxPressureDelta = pressureDelta > maxPressureDelta ? pressureDelta : maxPressureDelta;
 
         // If the pressure delta is positive, we have a flow from the current voxel to the neighbor.
         if (pressureDelta > 0)

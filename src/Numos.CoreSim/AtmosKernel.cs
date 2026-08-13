@@ -391,12 +391,11 @@ internal sealed partial class AtmosKernel : IDisposable
                 }
 
                 // If the current voxel is on the boundary of the chunk and has a pressure above 1.0f...
-                if (currentPressure > 1.0f &&
-                    (localPosition.X == 0 ||
+                if (localPosition.X == 0 ||
                      localPosition.X == chunk.Width - 1 ||
                      localPosition.Y == 0 ||
                      localPosition.Y == chunk.Height - 1 ||
-                     chunk.Depth > 1 && (localPosition.Z == 0 || localPosition.Z == chunk.Depth - 1)))
+                     chunk.Depth > 1 && (localPosition.Z == 0 || localPosition.Z == chunk.Depth - 1))
                 {
                     if (boundaryEventCount >= boundaryBuffer.Length)
                         throw new InvalidOperationException("Boundary flow event buffer capacity was exceeded.");

@@ -783,8 +783,10 @@ internal sealed partial class AtmosKernel : IDisposable
                             };
                             precipCount++;
 
+                            float remainingMoles = chunk.ActiveGases[g].Moles[idx];
+
                             // Release Latent Heat back to local environment
-                            float tempIncrease = molesToCondense * latentHeatVap / specificHeatCapacity;
+                            float tempIncrease = molesToCondense * latentHeatVap / specificHeatCapacity / remainingMoles;
                             chunk.Temperature[idx] += tempIncrease;
                         }
                     }

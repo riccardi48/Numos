@@ -491,11 +491,10 @@ internal sealed partial class AtmosKernel : IDisposable
             float temp = chunk.Temperature[idx];
             if (temp <= 0)
                 temp = defaultTemp;
-            float invTemp = 1f / temp;
 
-            float flowFactor = flow * invTemp;
+            float flowFactor = flow / temp;
             float neighborTemp = isVoid ? 0f : chunk.Temperature[neighborIdx];
-            float tempRatio = neighborTemp * invTemp;
+            float tempRatio = neighborTemp / temp;
 
             var gasRegistry = _config.GasRegistry;
 

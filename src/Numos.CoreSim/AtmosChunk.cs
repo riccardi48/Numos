@@ -131,6 +131,8 @@ internal class AtmosChunk
     /// <remarks>These values are recomputed by the simulation each tick.</remarks>
     public FlatArray<float> TotalPressure;
 
+    public FlatArray<float> TotalEnergy;
+
     /// <summary>
     ///     Total number of voxels in this chunk, equal to <c>Width * Height * Depth</c>.
     /// </summary>

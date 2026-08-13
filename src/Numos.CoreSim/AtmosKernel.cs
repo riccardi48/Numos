@@ -763,6 +763,8 @@ internal sealed partial class AtmosKernel : IDisposable
         float condensationRateFactor = _config.CondensationRateFactor;
         var P_reference = 1000f; // Reference pressure scale (R = 1)
 
+        CalculateTotalEnergy(chunk);
+
         for (var g = 0; g < chunk.ActiveGasCount; g++)
         {
             int gasId = chunk.ActiveGases[g].GasId;
@@ -821,15 +823,24 @@ internal sealed partial class AtmosKernel : IDisposable
                             };
                             precipCount++;
 
-                            float remainingMoles = chunk.ActiveGases[g].Moles[idx];
-
-                            // Release Latent Heat back to local environment
-                            float tempIncrease = molesToCondense * latentHeatVap / specificHeatCapacity / remainingMoles;
-                            chunk.Temperature[idx] += tempIncrease;
+                            float energyIncrease = molesToCondense * latentHeatVap;
+                            float energyFromCondensedLost = boilingPoint * molesToCondense * specificHeatCapacity;
+                            chunk.TotalEnergy[idx] += energyIncrease - energyFromCondensedLost;
                         }
                     }
                 }
             }
+        }
+        for (var i = 0; i < chunk.ActiveAirCount; i++)
+        {
+            
+            ushort idx = chunk.ActiveAirIndices[i];
+
+            var totalMoles = 0f;
+            for (var g = 0; g < chunk.ActiveGasCount; g++)
+                totalMoles += chunk.ActiveGases[g].Moles[idx];
+
+            chunk.Temperature[idx] = chunk.TotalEnergy[idx] / GetTotalSpecificHeatCapacity(chunk, idx) * totalMoles;
         }
     }
 

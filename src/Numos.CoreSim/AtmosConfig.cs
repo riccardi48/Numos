@@ -65,6 +65,12 @@ public class AtmosConfig
     public float MinFlowCutoff { get; set; } = 0.1f;
 
     /// <summary>
+    ///     Heat flows below this are snapped to equilibrium.
+    /// </summary>
+    public float MinHeatCutoff { get; set; } = 0.1f;
+
+
+    /// <summary>
     ///     Below this pressure, voxel contents are zeroed out.
     /// </summary>
     public float VacuumThreshold { get; set; } = 1.0f;

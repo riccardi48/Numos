@@ -132,6 +132,10 @@ public sealed class ThermodynamicsIntegrationTests
         float energyBeforeDiffusion = SimTestHelpers.TotalThermalEnergy(config,
             simulation.GetChunkSnapshot(hot), simulation.GetChunkSnapshot(cold));
         simulation.Tick();
+        simulation.Tick();
+        simulation.Tick();
+        simulation.Tick();
+        simulation.Tick();
 
         var hotSnapshot = simulation.GetChunkSnapshot(hot);
         var coldSnapshot = simulation.GetChunkSnapshot(cold);
@@ -246,6 +250,10 @@ public sealed class ThermodynamicsIntegrationTests
         simulation.Tick();
         float energyBeforeDiffusion = SimTestHelpers.TotalThermalEnergy(config,
             simulation.GetChunkSnapshot(chunk));
+        simulation.Tick();
+        simulation.Tick();
+        simulation.Tick();
+        simulation.Tick();
         simulation.Tick();
 
         var snapshot = simulation.GetChunkSnapshot(chunk);

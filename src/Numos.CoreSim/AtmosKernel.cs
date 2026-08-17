@@ -864,16 +864,15 @@ internal sealed partial class AtmosKernel : IDisposable
         float neighborTemp = GetEffectiveTemperature(chunk.Temperature[neighborIdx]);
         float tempDelta = currentTemp - neighborTemp;
         
-        float minHeatCutoff = _config.MinHeatCutoff;
         float heatTransfer = CalculateHeatTransfer(tempDelta, (float)currentHeatCapacity, (float)neighborHeatCapacity,
-            thermalConductivity, minHeatCutoff);
+            thermalConductivity);
 
         float availableEnergy = MathF.Max(0f, currentTemp * (float)currentHeatCapacity);
         float neighborAvailableEnergy = MathF.Max(0f, neighborTemp * (float)neighborHeatCapacity);
-        if (heatTransfer > 0 && heatTransfer > availableEnergy / 6 )
-            heatTransfer = availableEnergy / 6;
-        if (heatTransfer < 0 && heatTransfer < -neighborAvailableEnergy / 6)
-            heatTransfer = -neighborAvailableEnergy / 6;
+        if (heatTransfer > 0 && heatTransfer > availableEnergy / 6f)
+            heatTransfer = availableEnergy / 6f;
+        if (heatTransfer < 0 && heatTransfer < -neighborAvailableEnergy / 6f)
+            heatTransfer = -neighborAvailableEnergy / 6f;
 
         energyDeltas[idx] -= heatTransfer;
         energyDeltas[neighborIdx] += heatTransfer;
@@ -898,7 +897,7 @@ internal sealed partial class AtmosKernel : IDisposable
     }
 
     private static float CalculateHeatTransfer(float temperatureDelta, float sourceHeatCapacity,
-        float targetHeatCapacity, float thermalConductivity, float minHeatCutoff)
+        float targetHeatCapacity, float thermalConductivity)
     {
         if (!float.IsFinite(temperatureDelta) || !IsFinitePositive(sourceHeatCapacity) ||
             !IsFinitePositive(targetHeatCapacity) || !IsFinitePositive(thermalConductivity))
@@ -907,7 +906,7 @@ internal sealed partial class AtmosKernel : IDisposable
         float requestedTransfer = temperatureDelta * thermalConductivity;
         float equilibriumTransfer = temperatureDelta * sourceHeatCapacity * targetHeatCapacity /
             (sourceHeatCapacity + targetHeatCapacity);
-        if (MathF.Abs(requestedTransfer) > MathF.Abs(equilibriumTransfer) || MathF.Abs(requestedTransfer) < minHeatCutoff && temperatureDelta != 0f)
+        if (MathF.Abs(requestedTransfer) > MathF.Abs(equilibriumTransfer) && temperatureDelta != 0f)
             requestedTransfer = equilibriumTransfer;
         return requestedTransfer;
     }
@@ -1088,9 +1087,8 @@ internal sealed partial class AtmosKernel : IDisposable
         float neighborTemp = GetEffectiveTemperature(neighborChunk.Temperature[neighborIdx]);
         float tempDelta = sourceTemp - neighborTemp;
         float sourceEnergy = sourceTemp * sourceHeatCapacity;
-        float minHeatCutoff = _config.MinHeatCutoff;
         float heatTransfer = CalculateHeatTransfer(tempDelta, sourceHeatCapacity, neighborHeatCapacity,
-            _config.ThermalConductivity, minHeatCutoff);
+            _config.ThermalConductivity);
         if (heatTransfer <= 0f)
             return;
         if (heatTransfer > sourceEnergy / 6)

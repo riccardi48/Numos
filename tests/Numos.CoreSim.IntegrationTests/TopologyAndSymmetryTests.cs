@@ -112,7 +112,7 @@ public sealed class TopologyAndSymmetryTests
     public void ThermalDiffusion_GasBearingVoxelsRemainWithinInitialExtrema()
     {
         const int size = 3;
-        var config = CreateThermalOnlyConfig(1f);
+        var config = CreateThermalOnlyConfig(0.05f);
         using var simulation = new AtmosSimulation(config, size, size, 1);
         var chunk = SimTestHelpers.CreateOpenChunk(simulation, new Int3(0, 0, 0));
         (int X, int Y)[] neighbors = [(0, 1), (2, 1), (1, 0), (1, 2)];
@@ -135,7 +135,7 @@ public sealed class TopologyAndSymmetryTests
         Assert.Multiple(() =>
         {
             Assert.That(snapshot.Temperature[centerIndex],
-                Is.EqualTo(400f).Within(SimTestHelpers.Tolerance));
+                Is.LessThan(400f));
             Assert.That(populatedIndices.All(index =>
                 float.IsFinite(snapshot.Temperature[index]) && snapshot.Temperature[index] >= 200f &&
                 snapshot.Temperature[index] <= 400f), Is.True);

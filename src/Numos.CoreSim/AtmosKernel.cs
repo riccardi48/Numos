@@ -872,7 +872,7 @@ internal sealed partial class AtmosKernel : IDisposable
         float neighborAvailableEnergy = MathF.Max(0f, neighborTemp * (float)neighborHeatCapacity);
         if (heatTransfer > 0 && heatTransfer > availableEnergy / 6 )
             heatTransfer = availableEnergy / 6;
-        else if (heatTransfer < 0 && heatTransfer < -neighborAvailableEnergy / 6)
+        if (heatTransfer < 0 && heatTransfer < -neighborAvailableEnergy / 6)
             heatTransfer = -neighborAvailableEnergy / 6;
 
         energyDeltas[idx] -= heatTransfer;
@@ -907,9 +907,8 @@ internal sealed partial class AtmosKernel : IDisposable
         float requestedTransfer = temperatureDelta * thermalConductivity;
         float equilibriumTransfer = temperatureDelta * sourceHeatCapacity * targetHeatCapacity /
             (sourceHeatCapacity + targetHeatCapacity);
-        if (requestedTransfer > equilibriumTransfer || MathF.Abs(requestedTransfer) < minHeatCutoff && temperatureDelta != 0f)
-            requestedTransfer = temperatureDelta * sourceHeatCapacity * targetHeatCapacity /
-                                     (sourceHeatCapacity + targetHeatCapacity);
+        if (MathF.Abs(requestedTransfer) > MathF.Abs(equilibriumTransfer) || MathF.Abs(requestedTransfer) < minHeatCutoff && temperatureDelta != 0f)
+            requestedTransfer = equilibriumTransfer;
         return requestedTransfer;
     }
 

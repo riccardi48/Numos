@@ -1091,8 +1091,8 @@ internal sealed partial class AtmosKernel : IDisposable
             _config.ThermalConductivity);
         if (heatTransfer <= 0f)
             return;
-        if (heatTransfer > sourceEnergy / 6)
-            heatTransfer = sourceEnergy / 6;
+        if (heatTransfer > sourceEnergy / 6f)
+            heatTransfer = sourceEnergy / 6f;
 
 
         float neighborEnergy = neighborTemp * neighborHeatCapacity;

@@ -40,20 +40,9 @@ internal static class AtmosSolverMath
         ushort localVoxelIndex)
     {
         Mole totalMoles = GetTotalMoles(chunk, localVoxelIndex);
-        if (totalMoles <= 0f)
-        {
-            chunk.SetVoxelToVacuum(localVoxelIndex);
-            return 0f;
-        }
-
-        Pascal pressure = CalculatePressure(config, totalMoles, chunk.Temperature[localVoxelIndex]);
-        if (pressure < config.VacuumThreshold)
-        {
-            chunk.SetVoxelToVacuum(localVoxelIndex);
-            return 0f;
-        }
-
-        return pressure;
+        return CalculatePressureAtVoxel(
+                config, chunk,
+                localVoxelIndex, totalMoles);
     }
 
     /// <summary>
@@ -73,8 +62,12 @@ internal static class AtmosSolverMath
         Pascal pressure = CalculatePressure(config, totalMoles, chunk.Temperature[localVoxelIndex]);
         if (pressure < config.VacuumThreshold)
         {
-            chunk.SetVoxelToVacuum(localVoxelIndex);
-            return 0f;
+            Pascal oldPressure = chunk.TotalPressure[localVoxelIndex];
+            if (pressure < oldPressure-float.Epsilon)
+            {
+                chunk.SetVoxelToVacuum(localVoxelIndex);
+                return 0f;
+            }
         }
 
         return pressure;

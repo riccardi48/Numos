@@ -151,11 +151,13 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
             Mole sourceMoles = sourceChunk.ActiveGases[gas].Moles[sourceIndex];
             Mole molesAdvected = advectedMoles * (sourceMoles / totalMoles);
 
+            Mole effectiveMolesLeft = MathF.Min(0f, sourceMoles - molesAdvected);
+
             float referenceDiffusivity = config.GetDiffusionCoefficient(gasId);
             float diffusionConstant = referenceDiffusivity * envFactor;
-            Mole molesDiffused = diffusionConstant * sourceMoles * AtmosSolverConstants.FixedTimeStep;
-            if (molesDiffused * 7 > sourceMoles)
-                molesDiffused = sourceMoles / 7;
+            Mole molesDiffused = diffusionConstant * effectiveMolesLeft * AtmosSolverConstants.FixedTimeStep;
+            if (molesDiffused * 7 > effectiveMolesLeft)
+                molesDiffused = effectiveMolesLeft / 7;
 
             Mole molesToMove = MathF.Min(sourceMoles, molesAdvected + molesDiffused);
             if (molesToMove <= 0f)

@@ -559,6 +559,15 @@ internal class AtmosChunk
             SetVoxelToVacuum(idx);
 
         VoxelRoomMap[idx] = roomId;
+        for (int r = 0; r < ActiveRoomCount; r++)
+        {
+            if (ActiveRoomIds[r] == roomId)
+            {
+                return;
+            }
+        }
+        ActiveRoomIds[ActiveRoomCount] = roomId;
+        ActiveRoomCount++;
     }
 
     /// <summary>
@@ -573,6 +582,13 @@ internal class AtmosChunk
             SetVoxelToVacuum(idx);
 
         VoxelRoomMap[idx] = classification.RoomId;
+        for (int r = 0; r < ActiveRoomCount; r++)
+        {
+            if (ActiveRoomIds[r] == classification.RoomId)
+                return;
+        }
+        ActiveRoomIds[ActiveRoomCount] = classification.RoomId;
+        ActiveRoomCount++;
     }
 
 

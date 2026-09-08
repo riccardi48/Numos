@@ -144,19 +144,21 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
 
         var neighborPosition = (targetPosition + neighborChunk.Dimensions) % neighborChunk.Dimensions;
         ushort neighborIndex = neighborChunk.GetIndex(neighborPosition);
-        int neighborRoom = neighborChunk.VoxelRoomMap[neighborIndex];
+        VoxelClassification neighborRoom = neighborChunk.VoxelRoomMap[neighborIndex];
         // TODO: this is where the environment-voxel behavior from the design discussion belongs —
         // check MinimumTrackedMoles (see #63) against an environmental neighbor and, if under it,
         // divert the diffused amount into the neighbor's EnvironmentalMixture (destroying the gas)
         // instead of the normal outflow below. For now it's excluded like a wall.
-        if (neighborRoom == VoxelClassification.RoomSolid || neighborRoom == VoxelClassification.RoomEnvironment)
+        if (neighborRoom.IsSolid)
             return;
 
         ushort sourceIndex = sourceChunk.GetIndex(targetPosition - direction);
-        int sourceRoom = sourceChunk.VoxelRoomMap[sourceIndex];
-        if (sourceRoom == VoxelClassification.RoomSolid ||
-            sourceRoom == VoxelClassification.RoomVoid ||
-            sourceRoom == VoxelClassification.RoomEnvironment)
+        VoxelClassification sourceRoom = sourceChunk.VoxelRoomMap[sourceIndex];
+        if (sourceRoom.IsSolid ||
+            sourceRoom.IsVoid)
+            return;
+
+        if (sourceRoom.IsEnvironmental && neighborRoom.IsEnvironmental)
             return;
 
         // We only care about outflows
@@ -168,8 +170,7 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
         // Same calculation as advection solver
         // TODO make sure this and advection share some code
         Pascal sourcePressure = sourceChunk.TotalPressure[sourceIndex];
-        bool isVoid = neighborRoom == VoxelClassification.RoomVoid;
-        Pascal neighborPressure = isVoid ? 0f : neighborChunk.TotalPressure[neighborIndex];
+        Pascal neighborPressure = neighborRoom.IsVoid ? 0f : neighborChunk.TotalPressure[neighborIndex];
         Pascal pressureDelta = sourcePressure - neighborPressure;
         Pascal bulkPressureTransfer = pressureDelta > 0f
             ? AtmosSolverMath.CalculateBulkPressureTransfer(context.TickConfig, pressureDelta)
@@ -181,7 +182,8 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
             sourceIndex,
             neighborChunk,
             neighborIndex,
-            isVoid,
+            sourceRoom,
+            neighborRoom,
             totalMoles,
             bulkPressureTransfer,
             injectionBuffer);
@@ -189,9 +191,10 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
 
     private static void TransferSpecies(
         AtmosSolverExecutionContext context, AtmosChunk sourceChunk,
-        ushort sourceIndex, AtmosChunk neighborChunk, ushort neighborIndex, bool isVoid,
+        ushort sourceIndex, AtmosChunk neighborChunk, ushort neighborIndex, VoxelClassification sourceRoom, VoxelClassification neighborRoom,
         Mole totalMoles, Pascal bulkPressureTransfer, InjectionBuffer injectionBuffer)
     {
+        EnvironmentalMixture environmentalMixture = sourceChunk.GetEnvironmentalMixture(sourceIndex, context.TickConfig);
         // Very similar to advection solver
         // See there for docs on the maths
         var config = context.TickConfig;
@@ -211,6 +214,7 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
         {
             int gasId = sourceChunk.ActiveGases[gas].GasId;
             Mole sourceMoles = sourceChunk.ActiveGases[gas].Moles[sourceIndex];
+
             Mole molesAdvected = advectedMoles * (sourceMoles / totalMoles);
 
             float referenceDiffusivity = config.GetDiffusionCoefficient(gasId);
@@ -228,11 +232,12 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
             if (molesToMove <= 0f)
                 continue;
 
-            QueueInjection(injectionBuffer, sourceChunk, sourceIndex, gasId, -molesToMove, sourceTemperature);
+            if (!sourceRoom.IsEnvironmental)
+                QueueInjection(injectionBuffer, sourceChunk, sourceIndex, gasId, -molesToMove, sourceTemperature);
 
             movedGas = true;
 
-            if (isVoid)
+            if (neighborRoom.IsVoid || neighborRoom.IsEnvironmental)
                 continue;
 
             if (!neighborChunk.IsAwake)

@@ -68,8 +68,9 @@ public readonly record struct EnvironmentalMixture(
 
         Array.Sort(validated, static (left, right) => left.Key.CompareTo(right.Key));
 
+        Pascal pressure = FloatMath.GetNonnegativeFinite(source.Pressure);
         return new EnvironmentalMixture(
-            FloatMath.GetNonnegativeFinite(source.Pressure),
+            pressure,
             FloatMath.IsFinitePositive(source.Temperature) ? source.Temperature : AtmosConfigDefaults.SpaceTemperature,
             validated);
     }

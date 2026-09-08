@@ -48,6 +48,13 @@ public partial class SimulationViewer
             config.GasRegistry.Add(Nitrogen);
         }
 
+        KeyValuePair<int, float>[] gasFractions =
+        [
+            KeyValuePair.Create(1, 0.79f),
+            KeyValuePair.Create(0, 0.21f)
+        ];
+        config.DefaultEnvironmentalMixture = new EnvironmentalMixture(100000f, 300, gasFractions);
+
         AtmosSimulation? simulation = null;
         try
         {

@@ -430,11 +430,30 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
             for (int index = 0; index < length; index++)
             {
                 ushort voxelIndex = (ushort)(start + index);
-                chunk.TotalPressure[voxelIndex] =
-                    AtmosSolverMath.CalculatePressureAtVoxel(config, chunk, voxelIndex, totalMoles[index]);
+                VoxelClassification classification = chunk.VoxelRoomMap[voxelIndex];
+                if (classification.IsEnvironmental)
+                {
+                    // Moles and temperature were materialized once when the mixture was set
+                    // (see AtmosChunk.MaterializeEnvironmentalMixture) and are never mutated by
+                    // delta application afterward (ProcessBulkGas/ProcessDiffusionGas never debit
+                    // or credit an environmental voxel), so only pressure — which this method
+                    // unconditionally recomputes for every voxel every tick — needs restoring
+                    // here. CalculatePressureAtVoxel is deliberately bypassed: its vacuum-
+                    // threshold snapping would otherwise collapse a deliberately low, externally
+                    // fixed environmental pressure to vacuum.
+                    Pascal pressure = chunk.GetEnvironmentalMixture(voxelIndex, config).Pressure;
+                    chunk.TotalPressure[voxelIndex] = pressure;
+                    if (pressure > 0f && totalMoles[index] > 0f)
+                        workspace.Capacitance![voxelIndex] = totalMoles[index] / pressure;
+                }
+                else
+                {
+                    chunk.TotalPressure[voxelIndex] =
+                        AtmosSolverMath.CalculatePressureAtVoxel(config, chunk, voxelIndex, totalMoles[index]);
 
-                if (chunk.TotalPressure[voxelIndex] > 0f && totalMoles[index] > 0f)
-                    workspace.Capacitance![voxelIndex] = totalMoles[index] / chunk.TotalPressure[voxelIndex];
+                    if (chunk.TotalPressure[voxelIndex] > 0f && totalMoles[index] > 0f)
+                        workspace.Capacitance![voxelIndex] = totalMoles[index] / chunk.TotalPressure[voxelIndex];
+                }
             }
 
             Span<JoulePerKelvin> heatCapacity = chunk.TotalHeatCapacity.AsSpan().Slice(start, length);
@@ -469,9 +488,9 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <param name="chunk">The chunk containing the voxel.</param>
     /// <param name="position">The voxel's local position.</param>
     /// <param name="neighborIndices">The destination buffer indexed by active voxel and direction.</param>
-    /// <param name="neighborKinds">The destination buffer classifying air, void, and blocked directions.</param>
+    /// <param name="neighborKinds">The destination buffer classifying air, void, environmental, and blocked directions.</param>
     /// <param name="slotBase">The first direction slot owned by the active voxel.</param>
-    /// <returns>The number of non-solid neighbors, including void neighbors.</returns>
+    /// <returns>The number of non-solid neighbors, including void and environmental neighbors.</returns>
     private static int ResolveNeighbors(
         AtmosChunk chunk,
         Int3 position,
@@ -521,13 +540,16 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
         ref int count)
     {
         ushort neighborIndex = chunk.GetIndexUnsafe(neighborPosition);
-        int room = chunk.VoxelRoomMap[neighborIndex];
-        if (room == VoxelClassification.RoomSolid)
+        VoxelClassification classification = chunk.VoxelRoomMap[neighborIndex];
+        if (classification.IsSolid)
             return;
 
         neighborIndices[slotBase + direction] = neighborIndex;
-        neighborKinds[slotBase + direction] =
-            room == VoxelClassification.RoomVoid ? NeighborKind.Void : NeighborKind.Air;
+        neighborKinds[slotBase + direction] = classification.IsVoid
+            ? NeighborKind.Void
+            : classification.IsEnvironmental
+                ? NeighborKind.Environmental
+                : NeighborKind.Air;
 
         count++;
     }
@@ -575,6 +597,10 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <param name="workspace">The workspace containing resolved geometry and conductance output.</param>
     /// <param name="workItem">The active-air range owned by this invocation.</param>
     /// <param name="config">The immutable configuration snapshot for the tick.</param>
+    /// <remarks>
+    ///     Both void and environmental neighbors read as non-void here; an environmental neighbor's
+    ///     fixed, already-restored <c>TotalPressure</c> participates exactly like an ordinary voxel's.
+    /// </remarks>
     private static void ComputeConductance(
         ref ChunkWorkspace workspace,
         VoxelWorkItem workItem,
@@ -616,6 +642,9 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <remarks>
     ///     The voxel's self-conductance participates in the scaling denominator so simultaneous
     ///     outflows cannot overshoot equilibrium. Every edge writer must finish before this method runs.
+    ///     An environmental neighbor has its own real, fixed capacitance and is folded back in the same
+    ///     way as an ordinary air neighbor; only void — which has no capacitance of its own to conduct
+    ///     back — is excluded.
     /// </remarks>
     private static void ReduceIncidentConductance(
         ref ChunkWorkspace workspace,
@@ -654,7 +683,8 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
                 if (workspace.Capacitance[voxelIndex] != 0f)
                     incident += workspace.EdgeConductance![voxelIndex * NeighborDirections.Length + direction];
 
-                if (neighborKind == NeighborKind.Air && workspace.Capacitance[neighborIndex] != 0f)
+                if ((neighborKind == NeighborKind.Air || neighborKind == NeighborKind.Environmental) &&
+                    workspace.Capacitance[neighborIndex] != 0f)
                 {
                     incident += workspace.EdgeConductance![
                         neighborIndex * NeighborDirections.Length + OppositeNeighborDirections[direction]];
@@ -674,7 +704,9 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <remarks>
     ///     This phase reads the tick's pressure snapshot and records fractions without mutating gas
     ///     channels. Source and neighbor conductance scaling keeps simultaneous transfers bounded
-    ///     and avoids checkerboard instability at aggressive bulk-flow coefficients.
+    ///     and avoids checkerboard instability at aggressive bulk-flow coefficients. An environmental
+    ///     neighbor is scaled by its own real capacitance, the same as an ordinary voxel; only void is
+    ///     treated as having unlimited capacity.
     /// </remarks>
     private static void ComputeBulkFlow(
         ref ChunkWorkspace workspace,
@@ -757,8 +789,12 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <param name="gas">The active gas-channel index owned by this invocation.</param>
     /// <param name="config">The immutable configuration snapshot for the tick.</param>
     /// <remarks>
-    ///     Transfers into void remove both gas and its thermal energy. The method does not mutate
-    ///     chunk gas state; a later tile-owned phase applies all gas rows to each destination voxel.
+    ///     Transfers into void or into an environmental voxel remove both gas and its thermal energy;
+    ///     an environmental source is never debited, since its moles are a fixed boundary condition
+    ///     materialized once (see <see cref="AtmosChunk.MaterializeEnvironmentalMixture" />) rather than
+    ///     tracked stock. Two environmental voxels never exchange moles with each other. The method does
+    ///     not mutate chunk gas state; a later tile-owned phase applies all gas rows to each destination
+    ///     voxel.
     /// </remarks>
     private static void ProcessBulkGas(
         ref ChunkWorkspace workspace,
@@ -783,12 +819,19 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
             if (sourceMoles <= 0f)
                 continue;
 
+            VoxelClassification sourceClassification = chunk.VoxelRoomMap[voxelIndex];
             Kelvin sourceTemperature = config.GetValidatedTemp(chunk.Temperature[voxelIndex]);
             int slotBase = activeIndex * NeighborDirections.Length;
             for (int direction = 0; direction < NeighborDirections.Length; direction++)
             {
                 Scalar moleFraction = workspace.BulkMoleFractions![slotBase + direction];
                 if (moleFraction <= 0f)
+                    continue;
+
+                var neighborKind = workspace.NeighborKinds![slotBase + direction];
+
+                // Two boundary voxels have nothing to move between each other.
+                if (sourceClassification.IsEnvironmental && neighborKind == NeighborKind.Environmental)
                     continue;
 
                 Mole molesToMove = sourceMoles * moleFraction;
@@ -798,10 +841,15 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
                 Joule64 energyTransferred =
                     (Mole64)molesToMove * molarHeatCapacity * sourceTemperature;
 
-                workspace.MoleDeltas[deltaOffset + voxelIndex] -= molesToMove;
-                workspace.EnergyDeltasByGas[deltaOffset + voxelIndex] -= energyTransferred;
+                if (!sourceClassification.IsEnvironmental)
+                {
+                    workspace.MoleDeltas[deltaOffset + voxelIndex] -= molesToMove;
+                    workspace.EnergyDeltasByGas[deltaOffset + voxelIndex] -= energyTransferred;
+                }
 
-                if (workspace.NeighborKinds![slotBase + direction] == NeighborKind.Void)
+                // Void destroys whatever reaches it; an environmental voxel doesn't track moles
+                // either, so it is never credited (see the design discussion on BoundaryFlowSolver).
+                if (neighborKind == NeighborKind.Void || neighborKind == NeighborKind.Environmental)
                     continue;
 
                 ushort neighborIndex = workspace.NeighborIndices![slotBase + direction];
@@ -819,7 +867,9 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <param name="config">The immutable configuration snapshot for the tick.</param>
     /// <remarks>
     ///     Each invocation exclusively owns its destination voxels. Gas rows are visited in active
-    ///     channel order so mole totals, heat capacity, and energy reduction retain deterministic rounding.
+    ///     channel order so mole totals, heat capacity, and energy reduction retain deterministic
+    ///     rounding. An environmental voxel is never touched by this method in practice: its deltas
+    ///     are always zero, since ProcessBulkGas/ProcessDiffusionGas never debit or credit it.
     /// </remarks>
     private static void ApplyDeltas(
         ref ChunkWorkspace workspace,
@@ -971,8 +1021,11 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <param name="gas">The active gas-channel index owned by this invocation.</param>
     /// <param name="config">The immutable configuration snapshot for the tick.</param>
     /// <remarks>
-    ///     Sources are traversed in active-index order to keep destination accumulation stable.
-    ///     Void contributes to the source's diffusion debit but receives no gas or energy.
+    ///     Sources are traversed in active-index order to keep destination accumulation stable. Void
+    ///     and environmental neighbors both contribute to the source's diffusion debit but receive no
+    ///     gas or energy; an environmental source is never debited in the first place, since its moles
+    ///     are a fixed boundary condition rather than tracked stock. Two environmental voxels never
+    ///     exchange moles with each other.
     /// </remarks>
     private static void ProcessDiffusionGas(
         ref ChunkWorkspace workspace,
@@ -1005,6 +1058,8 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
             if (sourceMoles <= 0f)
                 continue;
 
+            VoxelClassification sourceClassification = chunk.VoxelRoomMap[voxelIndex];
+
             float diffusionConstant =
                 referenceDiffusivity * workspace.DiffusionEnvironmentFactors![activeIndex];
 
@@ -1016,14 +1071,24 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
             Joule64 energyTransferred =
                 (Mole64)molesDiffused * molarHeatCapacity * temperature;
 
-            workspace.MoleDeltas![deltaOffset + voxelIndex] -= molesDiffused * validCount;
-            workspace.EnergyDeltasByGas![deltaOffset + voxelIndex] -= energyTransferred * validCount;
+            // An environmental source's moles are a fixed boundary condition, materialized once
+            // (see AtmosChunk.MaterializeEnvironmentalMixture) and never debited.
+            bool sourceIsEnvironmental = sourceClassification.IsEnvironmental;
+            if (!sourceIsEnvironmental)
+            {
+                workspace.MoleDeltas![deltaOffset + voxelIndex] -= molesDiffused * validCount;
+                workspace.EnergyDeltasByGas![deltaOffset + voxelIndex] -= energyTransferred * validCount;
+            }
 
             int slotBase = activeIndex * NeighborDirections.Length;
             for (int direction = 0; direction < NeighborDirections.Length; direction++)
             {
                 var neighborKind = workspace.NeighborKinds![slotBase + direction];
-                if (neighborKind is NeighborKind.Blocked or NeighborKind.Void)
+
+                // Void and environmental neighbors both destroy whatever reaches them without
+                // crediting anything back; an environmental source was never debited above, so
+                // there is nothing to reverse for it either way.
+                if (neighborKind is NeighborKind.Blocked or NeighborKind.Void or NeighborKind.Environmental)
                     continue;
 
                 ushort neighborIndex = workspace.NeighborIndices![slotBase + direction];
@@ -1031,9 +1096,13 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
                     gasMoles[neighborIndex] + molesDiffused < AtmosSolverConstants.MinimumTrackedMoles)
                 {
                     // Suppress deposits that would perpetually spread sub-threshold traces. The
-                    // source debit was recorded before neighbor classification, so reverse it here.
-                    workspace.MoleDeltas[deltaOffset + voxelIndex] += molesDiffused;
-                    workspace.EnergyDeltasByGas[deltaOffset + voxelIndex] += energyTransferred;
+                    // source debit was recorded before neighbor classification, so reverse it
+                    // here (a no-op when the source is environmental, since nothing was debited).
+                    if (!sourceIsEnvironmental)
+                    {
+                        workspace.MoleDeltas[deltaOffset + voxelIndex] += molesDiffused;
+                        workspace.EnergyDeltasByGas[deltaOffset + voxelIndex] += energyTransferred;
+                    }
                     continue;
                 }
 
@@ -1107,7 +1176,10 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     /// <param name="config">The immutable configuration snapshot used for gas properties and pressure.</param>
     /// <remarks>
     ///     Gas channels are accumulated in their existing order. Changing the reduction order changes
-    ///     floating-point rounding and can break deterministic replay compatibility.
+    ///     floating-point rounding and can break deterministic replay compatibility. This is a
+    ///     standalone entry point for refreshing derived state outside the tick pipeline (e.g. tests
+    ///     or tooling); the live tick path performs the equivalent work tile-by-tile in
+    ///     <see cref="RefreshAndResolve" />, so the two must stay in sync.
     /// </remarks>
     internal static void RefreshPressureAndHeatCapacity(AtmosChunk chunk, AtmosSolverConfigSnapshot config)
     {
@@ -1139,8 +1211,16 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
                 for (int index = 0; index < length; index++)
                 {
                     ushort voxelIndex = (ushort)(start + index);
-                    chunk.TotalPressure[voxelIndex] =
-                        AtmosSolverMath.CalculatePressureAtVoxel(config, chunk, voxelIndex, scratch[index]);
+                    VoxelClassification classification = chunk.VoxelRoomMap[voxelIndex];
+                    if (classification.IsEnvironmental)
+                    {
+                        // See RefreshAndResolve: moles/temperature are materialized once when the
+                        // mixture is set and never mutated afterward, so only pressure needs
+                        // restoring here, bypassing CalculatePressureAtVoxel's vacuum snapping.
+                        chunk.TotalPressure[voxelIndex] = chunk.GetEnvironmentalMixture(voxelIndex, config).Pressure;
+                    }
+                    else
+                        chunk.TotalPressure[voxelIndex] = AtmosSolverMath.CalculatePressureAtVoxel(config, chunk, voxelIndex, scratch[index]);
                 }
 
                 Span<JoulePerKelvin> heatCapacity = chunk.TotalHeatCapacity.AsSpan().Slice(start, length);
@@ -1170,7 +1250,14 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
     {
         Blocked,
         Air,
-        Void
+        Void,
+
+        /// <summary>
+        ///     A fixed, externally supplied mixture (see <see cref="EnvironmentalMixture" />) rather
+        ///     than simulated storage. Conducts and diffuses like an ordinary voxel with its own real
+        ///     capacitance, but is never debited or credited by delta application.
+        /// </summary>
+        Environmental
     }
 
     /// <summary>

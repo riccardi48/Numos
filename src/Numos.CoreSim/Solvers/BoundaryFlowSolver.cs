@@ -145,12 +145,18 @@ internal sealed class BoundaryFlowSolver : IAtmosSolverStage
         var neighborPosition = (targetPosition + neighborChunk.Dimensions) % neighborChunk.Dimensions;
         ushort neighborIndex = neighborChunk.GetIndex(neighborPosition);
         int neighborRoom = neighborChunk.VoxelRoomMap[neighborIndex];
-        if (neighborRoom == VoxelClassification.RoomSolid)
+        // TODO: this is where the environment-voxel behavior from the design discussion belongs —
+        // check MinimumTrackedMoles (see #63) against an environmental neighbor and, if under it,
+        // divert the diffused amount into the neighbor's EnvironmentalMixture (destroying the gas)
+        // instead of the normal outflow below. For now it's excluded like a wall.
+        if (neighborRoom == VoxelClassification.RoomSolid || neighborRoom == VoxelClassification.RoomEnvironment)
             return;
 
         ushort sourceIndex = sourceChunk.GetIndex(targetPosition - direction);
         int sourceRoom = sourceChunk.VoxelRoomMap[sourceIndex];
-        if (sourceRoom == VoxelClassification.RoomSolid || sourceRoom == VoxelClassification.RoomVoid)
+        if (sourceRoom == VoxelClassification.RoomSolid ||
+            sourceRoom == VoxelClassification.RoomVoid ||
+            sourceRoom == VoxelClassification.RoomEnvironment)
             return;
 
         // We only care about outflows

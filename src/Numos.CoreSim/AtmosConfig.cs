@@ -1,3 +1,4 @@
+using Numos.CoreSim.Datatypes.Primitives;
 using Numos.CoreSim.Solvers;
 using Numos.Maths;
 using Numos.Units;
@@ -29,6 +30,7 @@ public class AtmosConfig : IAtmosConfig
         SaturationReferencePressure = source.SaturationReferencePressure;
         DefaultDiffusionCoefficient = source.DefaultDiffusionCoefficient;
         SpaceTemperature = source.SpaceTemperature;
+        DefaultEnvironmentalMixture = source.DefaultEnvironmentalMixture;
         BulkFlowCoefficient = source.BulkFlowCoefficient;
         VacuumThreshold = source.VacuumThreshold;
         SleepThreshold = source.SleepThreshold;
@@ -120,6 +122,13 @@ public class AtmosConfig : IAtmosConfig
     /// </summary>
     [Quantity("temperature")]
     public Kelvin SpaceTemperature { get; set; } = AtmosConfigDefaults.SpaceTemperature;
+
+    /// <summary>
+    ///     Fixed mixture presented by <see cref="VoxelClassification.RoomEnvironment" /> voxels that do not have
+    ///     a per-voxel override set via <see cref="AtmosChunk.SetVoxelEnvironmentalMixture" />.
+    /// </summary>
+    public EnvironmentalMixture DefaultEnvironmentalMixture { get; set; } =
+        AtmosConfigDefaults.DefaultEnvironmentalMixture;
 
     /// <summary>
     ///     Dimensionless fraction of a pressure delta requested as bulk flow per simulation tick.

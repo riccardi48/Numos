@@ -657,7 +657,7 @@ internal sealed partial class AtmosKernel
     /// <param name="gasId">The gas channel identifier.</param>
     /// <param name="moles">The amount of gas to add, in moles.</param>
     /// <param name="temperature">The temperature of the added gas, in kelvins.</param>
-    /// <remarks>Injection into a solid or void voxel is ignored by the chunk.</remarks>
+    /// <remarks>Injection into a solid, void, or environmental voxel is ignored by the chunk.</remarks>
     /// <exception cref="KeyNotFoundException">No chunk is registered at <paramref name="position" />.</exception>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="localVoxelIndex" /> is outside the chunk.</exception>
     internal void AddGasToVoxel(
@@ -671,7 +671,9 @@ internal sealed partial class AtmosKernel
             ValidateGasInjection(gasId, moles, temperature);
 
             int classification = chunk.VoxelRoomMap[localVoxelIndex];
-            if (classification == VoxelClassification.RoomSolid || classification == VoxelClassification.RoomVoid)
+            if (classification == VoxelClassification.RoomSolid ||
+                classification == VoxelClassification.RoomVoid ||
+                classification == VoxelClassification.RoomEnvironment)
                 return;
 
             chunk.Wake();

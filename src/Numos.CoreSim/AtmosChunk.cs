@@ -123,13 +123,14 @@ internal class AtmosChunk
     /// </summary>
     /// <remarks>
     ///     Positive IDs identify rooms. The reserved values
-    ///     <see cref="VoxelClassification.RoomUnassigned" />, <see cref="VoxelClassification.RoomVoid" />, and
-    ///     <see cref="VoxelClassification.RoomSolid" />
-    ///     identify unassigned, void, and solid voxels respectively.
+    ///     <see cref="VoxelClassification.RoomUnassigned" />, <see cref="VoxelClassification.RoomVoid" />,
+    ///     <see cref="VoxelClassification.RoomSolid" />, and <see cref="VoxelClassification.RoomEnvironment" />
+    ///     identify unassigned, void, solid, and environmental voxels respectively.
     /// </remarks>
     /// <seealso cref="VoxelClassification.RoomSolid" />
     /// <seealso cref="VoxelClassification.RoomVoid" />
     /// <seealso cref="VoxelClassification.RoomUnassigned" />
+    /// <seealso cref="VoxelClassification.RoomEnvironment" />
     public FlatArray<int> VoxelRoomMap;
 
     /// <summary>
@@ -140,6 +141,15 @@ internal class AtmosChunk
     private long _generation;
     private long _revision;
     private Dictionary<object, SolverArrayStorage>? _solverArrays;
+
+    /// <summary>
+    ///     Per-voxel environmental mixture overrides, keyed by flat voxel index.
+    /// </summary>
+    /// <remarks>
+    ///     Most environmental voxels use <see cref="IAtmosConfig.DefaultEnvironmentalMixture" />; this sparse
+    ///     map only holds voxels configured with a distinct mixture. Allocated lazily on first use.
+    /// </remarks>
+    private Dictionary<ushort, EnvironmentalMixture>? _environmentalOverrides;
 
     /// <summary>
     ///     Creates a chunk with the specified dimensions.
@@ -225,6 +235,7 @@ internal class AtmosChunk
     {
         int voxelCount = GetValidatedVoxelCount(width, height, depth);
         _solverArrays = null;
+        _environmentalOverrides = null;
         GridPosition = position;
         IsAwake = false;
         Width = width;
@@ -439,6 +450,10 @@ internal class AtmosChunk
         if (classification == VoxelClassification.RoomVoid)
             return;
 
+        // Environmental voxels present a fixed EnvironmentalMixture instead of accumulating moles.
+        if (classification == VoxelClassification.RoomEnvironment)
+            return;
+
         if (!IsAwake)
             Wake();
 
@@ -554,7 +569,7 @@ internal class AtmosChunk
     [PublicAPI]
     public void SetVoxelClassification(ushort idx, VoxelClassification classification)
     {
-        if (classification.IsSolid || classification.IsVoid)
+        if (classification.IsSolid || classification.IsVoid || classification.IsEnvironmental)
             SetVoxelToVacuum(idx);
 
         VoxelRoomMap[idx] = classification.RoomId;
@@ -582,10 +597,44 @@ internal class AtmosChunk
     [PublicAPI]
     public void SetChunkClassification(VoxelClassification classification)
     {
-        if (classification.IsSolid || classification.IsVoid)
+        if (classification.IsSolid || classification.IsVoid || classification.IsEnvironmental)
             SetChunkToVacuum();
 
         VoxelRoomMap.Fill(classification.RoomId);
+    }
+
+    /// <summary>
+    ///     Sets a per-voxel environmental mixture override, replacing the configured default for that voxel.
+    /// </summary>
+    /// <remarks>Only meaningful for a voxel classified <see cref="VoxelClassification.RoomEnvironment" />.</remarks>
+    [PublicAPI]
+    public void SetVoxelEnvironmentalMixture(ushort idx, EnvironmentalMixture mixture)
+    {
+        _environmentalOverrides ??= new Dictionary<ushort, EnvironmentalMixture>();
+        _environmentalOverrides[idx] = EnvironmentalMixture.Validate(mixture);
+        MarkChanged();
+    }
+
+    /// <summary>
+    ///     Removes a per-voxel environmental mixture override, reverting that voxel to the configured default.
+    /// </summary>
+    [PublicAPI]
+    public void ClearVoxelEnvironmentalMixture(ushort idx)
+    {
+        if (_environmentalOverrides?.Remove(idx) == true)
+            MarkChanged();
+    }
+
+    /// <summary>
+    ///     Gets the effective environmental mixture for a voxel: its override if one is set, otherwise the
+    ///     configured default.
+    /// </summary>
+    [PublicAPI]
+    public EnvironmentalMixture GetEnvironmentalMixture(ushort idx, IAtmosConfig config)
+    {
+        return _environmentalOverrides != null && _environmentalOverrides.TryGetValue(idx, out var mixture)
+            ? mixture
+            : config.DefaultEnvironmentalMixture;
     }
 
 

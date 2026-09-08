@@ -1,3 +1,4 @@
+using Numos.CoreSim.Datatypes.Primitives;
 using Numos.CoreSim.Replay;
 using Numos.Maths;
 
@@ -42,6 +43,8 @@ public sealed class AtmosConfigSnapshot : IAtmosConfig
         SpaceTemperature = FloatMath.IsFinitePositive(source.SpaceTemperature)
             ? source.SpaceTemperature
             : AtmosConfigDefaults.SpaceTemperature;
+
+        DefaultEnvironmentalMixture = EnvironmentalMixture.Validate(source.DefaultEnvironmentalMixture);
 
         BulkFlowCoefficient = FloatMath.ClampUnitInterval(source.BulkFlowCoefficient);
         VacuumThreshold = FloatMath.GetNonnegativeFinite(source.VacuumThreshold);
@@ -105,6 +108,7 @@ public sealed class AtmosConfigSnapshot : IAtmosConfig
     public Pascal SaturationReferencePressure { get; }
     public Scalar DefaultDiffusionCoefficient { get; }
     public Kelvin SpaceTemperature { get; }
+    public EnvironmentalMixture DefaultEnvironmentalMixture { get; }
     public Scalar BulkFlowCoefficient { get; }
     public Pascal VacuumThreshold { get; }
     public int SleepThreshold { get; }
@@ -179,6 +183,15 @@ public sealed class AtmosConfigSnapshot : IAtmosConfig
         hash.Add(SaturationReferencePressure);
         hash.Add(DefaultDiffusionCoefficient);
         hash.Add(SpaceTemperature);
+        hash.Add(DefaultEnvironmentalMixture.Pressure);
+        hash.Add(DefaultEnvironmentalMixture.Temperature);
+        hash.Add(DefaultEnvironmentalMixture.GasFractions.Length);
+        foreach (var (gasId, fraction) in DefaultEnvironmentalMixture.GasFractions)
+        {
+            hash.Add(gasId);
+            hash.Add(fraction);
+        }
+
         hash.Add(BulkFlowCoefficient);
         hash.Add(VacuumThreshold);
         hash.Add(SleepThreshold);
@@ -211,6 +224,7 @@ public sealed class AtmosConfigSnapshot : IAtmosConfig
                SaturationReferencePressure.Equals(other.SaturationReferencePressure) &&
                DefaultDiffusionCoefficient.Equals(other.DefaultDiffusionCoefficient) &&
                SpaceTemperature.Equals(other.SpaceTemperature) &&
+               EnvironmentalMixturesEqual(DefaultEnvironmentalMixture, other.DefaultEnvironmentalMixture) &&
                BulkFlowCoefficient.Equals(other.BulkFlowCoefficient) &&
                VacuumThreshold.Equals(other.VacuumThreshold) &&
                SleepThreshold == other.SleepThreshold &&
@@ -242,6 +256,26 @@ public sealed class AtmosConfigSnapshot : IAtmosConfig
                 !left.MolarEnthalpyOfVaporization.Equals(right.MolarEnthalpyOfVaporization) ||
                 left.LiquidId != right.LiquidId ||
                 !left.DiffusionCoefficient.Equals(right.DiffusionCoefficient))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool EnvironmentalMixturesEqual(EnvironmentalMixture first, EnvironmentalMixture second)
+    {
+        if (!first.Pressure.Equals(second.Pressure) || !first.Temperature.Equals(second.Temperature))
+            return false;
+
+        if (first.GasFractions.Length != second.GasFractions.Length)
+            return false;
+
+        for (int i = 0; i < first.GasFractions.Length; i++)
+        {
+            if (first.GasFractions[i].Key != second.GasFractions[i].Key ||
+                !first.GasFractions[i].Value.Equals(second.GasFractions[i].Value))
             {
                 return false;
             }

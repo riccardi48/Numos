@@ -32,6 +32,12 @@ public readonly record struct VoxelClassification(int RoomId)
     public const int RoomVoid = -1;
 
     /// <summary>
+    ///     Voxel presents a fixed, externally supplied gas mixture instead of simulated storage.
+    ///     See <see cref="Datatypes.Primitives.EnvironmentalMixture" />.
+    /// </summary>
+    public const int RoomEnvironment = -3;
+
+    /// <summary>
     ///     Creates an unassigned voxel classification.
     /// </summary>
     public VoxelClassification() : this(RoomUnassigned)
@@ -60,6 +66,12 @@ public readonly record struct VoxelClassification(int RoomId)
     /// </summary>
     [PublicAPI]
     public bool IsVoid => RoomId == RoomVoid;
+
+    /// <summary>
+    ///     Returns true if the voxel presents a fixed environmental mixture instead of simulated gas storage.
+    /// </summary>
+    [PublicAPI]
+    public bool IsEnvironmental => RoomId == RoomEnvironment;
 
     /// <summary>
     ///     Implicitly converts a <see cref="VoxelClassification" /> to an <see cref="int" /> representing the room ID.

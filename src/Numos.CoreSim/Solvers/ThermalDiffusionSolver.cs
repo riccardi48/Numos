@@ -169,8 +169,10 @@ internal sealed class ThermalDiffusionSolver
 
         ushort neighborIndex = chunk.GetIndex(neighborPosition);
         int neighborRoom = chunk.VoxelRoomMap[neighborIndex];
+        // TODO: see ThermalBoundarySolver — environmental voxels don't conduct heat yet.
         if (neighborRoom == VoxelClassification.RoomSolid ||
-            neighborRoom == VoxelClassification.RoomVoid)
+            neighborRoom == VoxelClassification.RoomVoid ||
+            neighborRoom == VoxelClassification.RoomEnvironment)
             return;
 
         if (!chunk.TryGetThermalState(
@@ -201,7 +203,8 @@ internal sealed class ThermalDiffusionSolver
         ushort neighborIndex = chunk.GetIndex(neighborPosition);
         int neighborRoom = chunk.VoxelRoomMap[neighborIndex];
         if (neighborRoom == VoxelClassification.RoomSolid ||
-            neighborRoom == VoxelClassification.RoomVoid)
+            neighborRoom == VoxelClassification.RoomVoid ||
+            neighborRoom == VoxelClassification.RoomEnvironment)
             return;
 
         if (!chunk.TryGetThermalState(

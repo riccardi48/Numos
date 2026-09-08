@@ -97,13 +97,18 @@ internal sealed class ThermalBoundarySolver : IAtmosSolverStage
         var neighborLocalPosition = (targetPosition + neighborChunk.Dimensions) % neighborChunk.Dimensions;
         ushort neighborIndex = neighborChunk.GetIndex(neighborLocalPosition);
         int neighborRoom = neighborChunk.VoxelRoomMap[neighborIndex];
+        // TODO: environmental voxels don't conduct heat like ordinary air yet; revisit once the
+        // environment-voxel diffusion behavior lands.
         if (neighborRoom == VoxelClassification.RoomSolid ||
-            neighborRoom == VoxelClassification.RoomVoid)
+            neighborRoom == VoxelClassification.RoomVoid ||
+            neighborRoom == VoxelClassification.RoomEnvironment)
             return;
 
         ushort sourceIndex = sourceChunk.GetIndex(targetPosition - direction);
         int sourceRoom = sourceChunk.VoxelRoomMap[sourceIndex];
-        if (sourceRoom == VoxelClassification.RoomSolid || sourceRoom == VoxelClassification.RoomVoid)
+        if (sourceRoom == VoxelClassification.RoomSolid ||
+            sourceRoom == VoxelClassification.RoomVoid ||
+            sourceRoom == VoxelClassification.RoomEnvironment)
             return;
 
         var source = new ThermalVoxelAddress(sourcePosition, sourceIndex);

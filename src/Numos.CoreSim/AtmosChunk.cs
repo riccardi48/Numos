@@ -624,21 +624,21 @@ internal class AtmosChunk
     /// </summary>
     /// <remarks>Only meaningful for a voxel classified <see cref="VoxelClassification.RoomEnvironment" />.</remarks>
     [PublicAPI]
-    public void SetVoxelEnvironmentalMixture(ushort idx, EnvironmentalMixture mixture)
+    public void SetVoxelEnvironmentalMixture(ushort idx, EnvironmentalMixture mixture, IAtmosConfig config)
     {
         _environmentalOverrides ??= new Dictionary<ushort, EnvironmentalMixture>();
         _environmentalOverrides[idx] = EnvironmentalMixture.Validate(mixture);
-        MarkChanged();
+        MaterializeEnvironmentalMixture(idx, config);
     }
 
     /// <summary>
     ///     Removes a per-voxel environmental mixture override, reverting that voxel to the configured default.
     /// </summary>
     [PublicAPI]
-    public void ClearVoxelEnvironmentalMixture(ushort idx)
+    public void ClearVoxelEnvironmentalMixture(ushort idx, IAtmosConfig config)
     {
         if (_environmentalOverrides?.Remove(idx) == true)
-            MarkChanged();
+            MaterializeEnvironmentalMixture(idx, config);
     }
 
     /// <summary>
@@ -653,6 +653,36 @@ internal class AtmosChunk
             : config.DefaultEnvironmentalMixture;
     }
 
+    /// <summary>
+    ///     Writes an environmental voxel's per-gas moles, pressure, and temperature from its
+    ///     effective <see cref="EnvironmentalMixture" /> (override or config default).
+    /// </summary>
+    /// <remarks>
+    ///     Call this once whenever the voxel's classification or mixture changes — not from the
+    ///     hot solver loop. Ensures a gas channel exists for every gas the mixture names, even one
+    ///     the chunk has never otherwise used, and overwrites every other active gas's moles at
+    ///     this voxel to zero so a prior classification's composition doesn't linger.
+    /// </remarks>
+    [PublicAPI]
+    public void MaterializeEnvironmentalMixture(ushort idx, IAtmosConfig config)
+    {
+        var mixture = GetEnvironmentalMixture(idx, config);
+        Mole totalMoles = AtmosSolverMath.PressureToMoles(config, mixture.Pressure, mixture.Temperature);
+
+        // Ensure every gas the mixture names has a channel before touching any moles below.
+        foreach (var (gasId, _) in mixture.GasFractions)
+            GetOrCreateGasChannel(gasId);
+
+        for (int gas = 0; gas < ActiveGasCount; gas++)
+        {
+            int gasId = ActiveGases[gas].GasId;
+            ActiveGases[gas].Moles[idx] = mixture.GetFraction(gasId) * totalMoles;
+        }
+
+        TotalPressure[idx] = mixture.Pressure;
+        Temperature[idx] = mixture.Temperature;
+        MarkChanged();
+    }
 
     internal int GetOrCreateGasChannel(int gasId)
     {

@@ -1059,6 +1059,39 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
                 continue;
 
             VoxelClassification sourceClassification = chunk.VoxelRoomMap[voxelIndex];
+            bool sourceIsEnvironmental = sourceClassification.IsEnvironmental;
+            int slotBase = activeIndex * NeighborDirections.Length;
+
+            // A trace amount next to a fixed environment is destroyed outright rather than left to
+            // glacially diffuse below MinimumTrackedMoles forever. This is checked once per voxel and,
+            // if it fires, replaces normal diffusion entirely for this voxel/gas this tick: the whole
+            // stock is emptied exactly once regardless of how many environmental neighbors there are,
+            // and none of it is credited outward to any other neighbor. Removal has to go through
+            // MoleDeltas like everything else here — TotalHeatCapacity was already computed from the
+            // pre-diffusion moles, so mutating gasMoles directly would desync it from what ApplyDeltas
+            // reconstructs afterward.
+            if (!sourceIsEnvironmental && sourceMoles < AtmosSolverConstants.MinimumTrackedMoles*2)
+            {
+                bool hasEnvironmentalNeighbor = false;
+                for (int direction = 0; direction < NeighborDirections.Length; direction++)
+                {
+                    if (workspace.NeighborKinds![slotBase + direction] == NeighborKind.Environmental)
+                    {
+                        hasEnvironmentalNeighbor = true;
+                        break;
+                    }
+                }
+
+                if (hasEnvironmentalNeighbor)
+                {
+                    Kelvin sinkTemperature = config.GetValidatedTemp(chunk.Temperature[voxelIndex]);
+                    Joule64 sinkEnergy = (Mole64)sourceMoles * molarHeatCapacity * sinkTemperature;
+
+                    workspace.MoleDeltas![deltaOffset + voxelIndex] -= sourceMoles;
+                    workspace.EnergyDeltasByGas![deltaOffset + voxelIndex] -= sinkEnergy;
+                    continue;
+                }
+            }
 
             float diffusionConstant =
                 referenceDiffusivity * workspace.DiffusionEnvironmentFactors![activeIndex];
@@ -1071,23 +1104,16 @@ internal sealed class AdvectionSolver : IAtmosSolverStage
             Joule64 energyTransferred =
                 (Mole64)molesDiffused * molarHeatCapacity * temperature;
 
-            // An environmental source's moles are a fixed boundary condition, materialized once
-            // (see AtmosChunk.MaterializeEnvironmentalMixture) and never debited.
-            bool sourceIsEnvironmental = sourceClassification.IsEnvironmental;
             if (!sourceIsEnvironmental)
             {
                 workspace.MoleDeltas![deltaOffset + voxelIndex] -= molesDiffused * validCount;
                 workspace.EnergyDeltasByGas![deltaOffset + voxelIndex] -= energyTransferred * validCount;
             }
 
-            int slotBase = activeIndex * NeighborDirections.Length;
             for (int direction = 0; direction < NeighborDirections.Length; direction++)
             {
                 var neighborKind = workspace.NeighborKinds![slotBase + direction];
 
-                // Void and environmental neighbors both destroy whatever reaches them without
-                // crediting anything back; an environmental source was never debited above, so
-                // there is nothing to reverse for it either way.
                 if (neighborKind is NeighborKind.Blocked or NeighborKind.Void or NeighborKind.Environmental)
                     continue;
 

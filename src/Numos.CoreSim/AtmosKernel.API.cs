@@ -520,7 +520,7 @@ internal sealed partial class AtmosKernel
         lock (_stateGate)
         {
             var chunk = GetChunk(position);
-            chunk.SetChunkClassification(classification);
+            chunk.SetChunkClassification(classification, _config);
             RebuildActiveTopology(chunk);
             chunk.MarkChanged();
             if (ShouldRecord) RecordOperation(new SetChunkClassificationOperation(position, classification));
@@ -553,7 +553,7 @@ internal sealed partial class AtmosKernel
                     dimensions.Z > 1 && (z == 0 || z == dimensions.Z - 1);
 
                 if (isBoundary)
-                    chunk.SetVoxelClassification(chunk.GetIndex(new Int3(x, y, z)), classification, _tickConfig);
+                    chunk.SetVoxelClassification(chunk.GetIndex(new Int3(x, y, z)), classification, _config);
             }
 
             RebuildActiveTopology(chunk);
@@ -579,7 +579,7 @@ internal sealed partial class AtmosKernel
         {
             var chunk = GetChunk(position);
             ValidateVoxelIndex(chunk, localVoxelIndex);
-            chunk.SetVoxelClassification(localVoxelIndex, classification, _tickConfig);
+            chunk.SetVoxelClassification(localVoxelIndex, classification, _config);
             RebuildActiveTopology(chunk);
             chunk.MarkChanged();
             if (ShouldRecord) RecordOperation(new SetVoxelClassificationOperation(position, localVoxelIndex, classification));

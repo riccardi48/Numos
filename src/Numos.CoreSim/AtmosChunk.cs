@@ -588,11 +588,26 @@ internal class AtmosChunk
     ///     Sets every voxel classification. Solid and void classifications clear the chunk to vacuum.
     /// </summary>
     /// <param name="roomId">Classification value to assign.</param>
+    /// <param name="config"></param>
     [PublicAPI]
-    public void SetChunkClassification(int roomId)
+    public void SetChunkClassification(int roomId, IAtmosConfig? config = null)
     {
-        if (roomId < 0)
+        var classification = new VoxelClassification(roomId);
+        if (classification.IsSolid || classification.IsVoid)
             SetChunkToVacuum();
+
+        if (classification.IsEnvironmental)
+        {                
+            if (!IsAwake)
+                Wake();
+
+            for (ushort idx = 0; idx < ActiveAirCount; idx++)
+            {
+                SetVoxelToVacuum(idx);
+                if (config != null)
+                    MaterializeEnvironmentalMixture(idx, config);
+            }
+        }
 
         VoxelRoomMap.Fill(roomId);
     }
@@ -602,11 +617,25 @@ internal class AtmosChunk
     ///     Sets the entire chunk classification. Solid and void classifications clear the chunk to vacuum.
     /// </summary>
     /// <param name="classification">Classification value to assign.</param>
+    /// <param name="config"></param>
     [PublicAPI]
-    public void SetChunkClassification(VoxelClassification classification)
+    public void SetChunkClassification(VoxelClassification classification, IAtmosConfig? config = null)
     {
-        if (classification.IsSolid || classification.IsVoid || classification.IsEnvironmental)
+        if (classification.IsSolid || classification.IsVoid)
             SetChunkToVacuum();
+
+        if (classification.IsEnvironmental)
+        {
+            if (!IsAwake)
+                Wake();
+
+            for (ushort idx = 0; idx < ActiveAirCount; idx++)
+            {
+                SetVoxelToVacuum(idx);
+                if (config != null)
+                    MaterializeEnvironmentalMixture(idx, config);
+            }
+        }
 
         VoxelRoomMap.Fill(classification.RoomId);
     }

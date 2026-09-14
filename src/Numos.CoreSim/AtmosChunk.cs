@@ -556,7 +556,7 @@ internal class AtmosChunk
     [PublicAPI]
     public void SetVoxelClassification(ushort idx, int roomId, IAtmosConfig? config = null)
     {
-        SetVoxelClassification(idx, roomId, config);
+        SetVoxelClassification(idx, new VoxelClassification(roomId), config);
     }
 
     /// <summary>
@@ -592,26 +592,8 @@ internal class AtmosChunk
     [PublicAPI]
     public void SetChunkClassification(int roomId, IAtmosConfig? config = null)
     {
-        var classification = new VoxelClassification(roomId);
-        if (classification.IsSolid || classification.IsVoid)
-            SetChunkToVacuum();
-
-        if (classification.IsEnvironmental)
-        {                
-            if (!IsAwake)
-                Wake();
-
-            for (ushort idx = 0; idx < ActiveAirCount; idx++)
-            {
-                SetVoxelToVacuum(idx);
-                if (config != null)
-                    MaterializeEnvironmentalMixture(idx, config);
-            }
-        }
-
-        VoxelRoomMap.Fill(roomId);
+        SetChunkClassification(new VoxelClassification(roomId), config);
     }
-
 
     /// <summary>
     ///     Sets the entire chunk classification. Solid and void classifications clear the chunk to vacuum.

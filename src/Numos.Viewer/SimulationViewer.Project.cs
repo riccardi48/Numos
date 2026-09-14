@@ -121,8 +121,8 @@ public partial class SimulationViewer
 
         KeyValuePair<int, float>[] gasFractions =
         [
-            KeyValuePair.Create(1, 0.79f),
-            KeyValuePair.Create(0, 0.21f)
+            KeyValuePair.Create(config.GasRegistry.GasIdToIndex(Nitrogen.Name), 0.79f),
+            KeyValuePair.Create(config.GasRegistry.GasIdToIndex(Oxygen.Name), 0.21f)
         ];
         config.DefaultEnvironmentalMixture = new EnvironmentalMixture(100000f, 300, gasFractions);
 

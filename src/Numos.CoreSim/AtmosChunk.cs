@@ -552,22 +552,11 @@ internal class AtmosChunk
     /// </summary>
     /// <param name="idx">Index of voxel</param>
     /// <param name="roomId">Classification value to assign.</param>
+    /// <param name="config"></param>
     [PublicAPI]
-    public void SetVoxelClassification(ushort idx, int roomId)
+    public void SetVoxelClassification(ushort idx, int roomId, IAtmosConfig? config = null)
     {
-        if (roomId < 0)
-            SetVoxelToVacuum(idx);
-
-        VoxelRoomMap[idx] = roomId;
-        for (int r = 0; r < ActiveRoomCount; r++)
-        {
-            if (ActiveRoomIds[r] == roomId)
-            {
-                return;
-            }
-        }
-        ActiveRoomIds[ActiveRoomCount] = roomId;
-        ActiveRoomCount++;
+        SetVoxelClassification(idx, roomId, config);
     }
 
     /// <summary>
@@ -575,20 +564,23 @@ internal class AtmosChunk
     /// </summary>
     /// <param name="idx">Index of voxel</param>
     /// <param name="classification">Classification value to assign.</param>
+    /// <param name="config"></param>
     [PublicAPI]
-    public void SetVoxelClassification(ushort idx, VoxelClassification classification)
+    public void SetVoxelClassification(ushort idx, VoxelClassification classification, IAtmosConfig? config = null)
     {
-        if (classification.IsSolid || classification.IsVoid || classification.IsEnvironmental)
+        if (classification.IsSolid || classification.IsVoid)
             SetVoxelToVacuum(idx);
 
-        VoxelRoomMap[idx] = classification.RoomId;
-        for (int r = 0; r < ActiveRoomCount; r++)
+        if (classification.IsEnvironmental)
         {
-            if (ActiveRoomIds[r] == classification.RoomId)
-                return;
+            SetVoxelToVacuum(idx);
+            if (!IsAwake)
+                Wake();
+            if (config != null)
+                MaterializeEnvironmentalMixture(idx, config);
         }
-        ActiveRoomIds[ActiveRoomCount] = classification.RoomId;
-        ActiveRoomCount++;
+
+        VoxelRoomMap[idx] = classification.RoomId;
     }
 
 

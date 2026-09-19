@@ -11,6 +11,11 @@
 
 1. [Design Goals](#1-design-goals)
 2. [Architecture Overview](#2-architecture-overview)
+    - [Why interacting simulations share a world](#why-interacting-simulations-share-a-world)
+    - [Explicit topology: portals, docks, and links beyond the grid](#explicit-topology-portals-docks-and-links-beyond-the-grid)
+    - [How the Viewer presents a world](#how-the-viewer-presents-a-world)
+    - [How explicit transport fits into a tick](#how-explicit-transport-fits-into-a-tick)
+    - [Writing a custom solver that touches portals](#writing-a-custom-solver-that-touches-portals)
    - 2.1 [Public and Dangerous API Boundaries](#21-public-and-dangerous-api-boundaries)
 3. [Data Model](#3-data-model)
    - 3.1 [Voxel Grid & Chunk](#31-voxel-grid--chunk)
@@ -32,12 +37,12 @@
    - 5.4 [Vacuum Cleanup](#54-vacuum-cleanup)
    - 5.5 [Delta Buffers (Ordering Scope)](#55-delta-buffers-ordering-scope)
 6. [Sleep System](#6-sleep-system)
-8. [Phase Changes (Condensation)](#8-phase-changes-condensation)
-   - 8.1 [Clausius-Clapeyron Saturation Model](#81-clausius-clapeyron-saturation-model)
-   - 8.2 [Phase-Change Internal-Energy Balance](#82-phase-change-internal-energy-balance)
-9. [Networking & Replication](#9-networking--replication)
-10. [Known Flaws & Limitations](#10-known-flaws--limitations)
-11. [Porting Guidance](#11-porting-guidance)
+7. [Phase Changes (Condensation)](#7-phase-changes-condensation)
+    - 7.1 [Clausius-Clapeyron Saturation Model](#71-clausius-clapeyron-saturation-model)
+    - 7.2 [Phase-Change Internal-Energy Balance](#72-phase-change-internal-energy-balance)
+8. [Networking & Replication](#8-networking--replication)
+9. [Known Flaws & Limitations](#9-known-flaws--limitations)
+10. [Porting Guidance](#10-porting-guidance)
 
 ---
 
@@ -54,8 +59,140 @@ The system is built to simulate atmospheric gas dynamics in the context of a spa
 
 ## 2. Architecture Overview
 
-Numos simulates gas at voxel resolution. A chunk sleeps when its pressure deltas remain below the configured threshold,
-and wakes as a whole when it receives a mutation or boundary flow.
+### Why interacting simulations share a world
+
+`AtmosWorld` is the root of an interacting atmospheric system. It owns fixed-step time, one shared immutable physics
+configuration, stable simulation registrations, and sparse topology. Each `AtmosSimulation` remains a separate storage
+domain whose chunks have exactly one owner. A compatibility simulation constructor creates a private one-simulation
+world, while multi-grid integrations create their simulations through a shared world.
+
+### Explicit topology: portals, docks, and links beyond the grid
+
+Most of a station's atmosphere is a plain 3D grid, and Numos never stores the fact that one voxel sits next to another
+— ±X/±Y/±Z adjacency is implicit, computed from chunk coordinates on demand. That works because the grid is Euclidean:
+given a coordinate, arithmetic tells you the neighbors.
+
+A door between two docked ships breaks that assumption. The voxel on one side and the voxel on the other aren't
+Cartesian neighbors of anything — they can be on opposite ends of the map, or in a completely different
+`AtmosSimulation` with its own coordinate system. Numos calls this general case an **explicit link**: an undirected,
+value-type edge between two `AtmosCellRef`s, held in a sparse overlay on `AtmosWorld` instead of being inferred from
+geometry. `CreatePortal`, `CreateDock`, and `CreateLinks` are three constructors over the same edge representation —
+a portal is a one-edge link set, a dock is a link set covering a whole mated surface, and `CreateLinks` is the batch
+API the other two are built on. `ExplicitLinkSetKind` just records which constructor made a given batch, purely so
+tooling and replay can tell a portal from a dock; it has no effect on how the edge behaves physically.
+
+Every link carries `ExplicitLinkFlags` deciding what is allowed to cross it. `GasTransport` and `ThermalTransport` are
+the two bits Numos' own built-in stages look for; the rest of that `byte` is reserved for hosts (see
+[Extending portal and dock transport](#extending-portal-and-dock-transport)). A link with neither built-in bit set
+still exists — it's inspectable, checkpointed, and shows up in topology enumeration — it just carries nothing through
+Numos' default gas or heat solvers, which is exactly what you want for, say, a purely decorative connection or one a
+custom solver owns entirely.
+
+Creating or destroying a link is queued, not immediate: it lands at the next tick boundary, when `TopologyVersion`
+advances. That's the same reason chunk registration is queued — a tick is already iterating a fixed set of chunks and
+edges, and inserting one mid-traversal would make solver results depend on when exactly you called `CreatePortal`
+relative to the current tick. Endpoint order is canonicalized on registration, so `CreatePortal(a, b)` and
+`CreatePortal(b, a)` are the same edge, and a physical pair of cells can only be linked once — Numos rejects a second
+edge between the same two voxels, and rejects a link that would duplicate an ordinary Cartesian neighbor (a portal
+between two cells that are already next to each other would just be redundant plumbing). Generational simulation and
+link-set IDs mean a handle to a removed portal fails loudly instead of silently reattaching to whatever reused that
+storage slot next. Activating a link wakes both endpoint chunks immediately, so a pressurized room on the far side of
+a portal can't hide behind a peer that happened to be asleep.
+
+### How the Viewer presents a world
+
+The Viewer presents every registered simulation in its own dockable 3D surface with an independent camera. One active
+simulation supplies the shared 2D slice and editing panels. Its World & Topology panel creates or removes simulations,
+captures two selected voxels for portals, and maps complete rectangular chunk faces into docks with quarter-turn and
+axis-flip controls.
+
+Inter-simulation connections use matching colored endpoint markers; intra-simulation connections also draw a local line.
+These displays do not imply shared chunk ownership. Every chunk still belongs to exactly one simulation, and a dock
+remains a sparse batch of cell links.
+
+### How explicit transport fits into a tick
+
+A world tick captures every simulation pipeline before running any callback, then advances every simulation through its
+advection barrier, applies explicit gas transport once across the compiled world edge set, advances every simulation
+through thermodynamics, and applies explicit thermal transport on the same cadence. Later stages — including any
+custom ones — therefore always see the completed result of both transport passes, never a partially-applied one.
+Registration order cannot decide which endpoint of a link updates first, because the explicit solver computes every
+edge's request before committing any of them (the next section explains why that matters for your own solver too).
+
+Numos simulates gas at voxel resolution. A chunk sleeps when its pressure deltas stay below the configured threshold
+and wakes as a whole on mutation or boundary flow; explicit links interact with sleep the same way Cartesian boundaries
+do — see [Sleep System](#6-sleep-system).
+
+### Writing a custom solver that touches portals
+
+If your custom stage needs to see explicit links at all, register it with `RegisterNeighborSolver` (or the `Before`/
+`After` variants), not the plain `Register`. A stage registered without a selection gets an *empty* topology view —
+`context.Topology.GetOwnedEdges()` silently returns nothing, and `GetNeighbors(cell)` returns no explicit neighbors —
+there is no exception to tell you a portal-aware stage forgot to ask for one:
+
+```csharp
+world.Solvers.RegisterNeighborSolverAfter(
+    AtmosBuiltInSolvers.Advection,
+    "game/custom-portal-gas",
+    new AtmosNeighborSelection(
+        "game/custom-portal-gas/v1",
+        includeCartesian: false,
+        static link => (link.Flags & ExplicitLinkFlags.GasTransport) != 0),
+    context =>
+    {
+        foreach (AtmosNeighborEdge edge in context.Topology.GetOwnedEdges())
+        {
+            // edge.First and edge.Second are the two AtmosCellRef endpoints of one portal or dock link.
+        }
+    });
+```
+
+`AtmosNeighborSelection` has two knobs, and picking the wrong one is the most common mistake:
+
+- `includeCartesian` adds every ordinary ±X/±Y/±Z neighbor to the compiled view alongside explicit links. Set it to
+  `false` for a solver that only ever cares about portals and docks — that's the example above, and it's what keeps
+  `GetOwnedEdges()` cheap: with Cartesian adjacency excluded, the view only walks the sparse explicit edge list instead
+  of every voxel in every chunk. Set it to `true` only when the same interaction genuinely needs to travel through
+  ordinary walls too, like fire or sound spreading through both open doorways and portals (see
+  [Use portals from a custom solver](using.md#use-portals-from-a-custom-solver) for that shape).
+- The `explicitLinks` selector decides which links are "yours." Numos calls it once per link, only when topology or
+  solver registration changes — never per tick — so it must be a pure function of the link's `Flags` and endpoints,
+  with no captured per-tick state. This is also why `ExplicitLinkFlags` reserves bits beyond `GasTransport`/
+  `ThermalTransport`: give a link a host-defined bit and your selector alone can pick it out, letting one link opt in
+  or out of your interaction independently of Numos' own physics.
+
+The selection's `Key` string is not just a label — it's checkpointed as part of that solver's registration and folded
+into world state hashing, so two builds that use the same key must agree on what the selector matches. Bump the key
+(`"v1"` → `"v2"`) when you change what a selection includes; reusing an old key for a semantically different selection
+makes a restored checkpoint compile the wrong topology for it.
+
+`GetOwnedEdges()` is a convenience: it re-derives current chunk membership on every call and visits each physical
+adjacency exactly once, which is the right shape for a *conservative* transfer — something moved from one endpoint
+must be removed from it and added to the other, exactly once, regardless of which endpoint you started from. A
+performance-sensitive tiled solver should instead call `context.Topology.GetChunk(simulation, chunk)` once per chunk
+and then `GetNeighbors(voxelIndex)` per voxel — an allocation-free enumerable — which avoids re-deriving chunk
+membership on every voxel the way a fresh `GetOwnedEdges()` call would.
+
+Two obligations the compiled topology does **not** enforce for you, because it only describes structural adjacency:
+
+- **Solid and void cells still appear as neighbors.** A portal endpoint sitting in a wall or a vacuum voxel is still a
+  valid edge in `GetOwnedEdges()` — Numos' own transport stages check `VoxelRoomMap` before moving anything, and a
+  custom stage needs the same guard, or it will happily inject gas into a solid voxel.
+- **Waking is your job.** If your stage mutates gas or heat through `Numos.API.Dangerous` (see
+  [2.1](#21-public-and-dangerous-api-boundaries)), call `Wake()` on every chunk you changed. Nothing else notices a raw
+  span write; a chunk that was asleep before your mutation stays marked asleep afterward unless you wake it, so its
+  new pressure never gets re-evaluated.
+
+If your stage is doing more than reading — if it moves gas or energy across a link — treat a cell with multiple
+explicit neighbors the way the built-in stage does: compute every edge's request from one unchanged snapshot of the
+tick's starting state, apply a single shared limiter per `(cell, gas)` pair so the sum of everything leaving a cell
+this tick can never exceed what it had, and only then write the results. The built-in `explicit-gas-transport` and
+`explicit-thermal-transport` stages exist specifically because a cell can have an arbitrary number of portals attached
+to it (unlike a Cartesian voxel, which always has at most six neighbors), so a naive "read one edge, write it, move to
+the next edge" loop lets whichever edge happens to run first drain a shared cell dry and starve every edge after it —
+the result becomes dependent on edge iteration order, which is exactly the kind of order-dependence Numos'
+determinism contract forbids. See [Extending portal and dock transport](#extending-portal-and-dock-transport) for how
+to replace or layer on top of the built-in stages instead of writing this from scratch.
 
 ### Component Relationships
 
@@ -90,9 +227,10 @@ Numos deliberately exposes two package-level integration surfaces:
 | `Numos.API.Dangerous` | Measured performance-critical solver code | No compatibility guarantee (for now) | Handle-addressed live spans and unchecked state views |
 
 The dangerous package must be referenced separately and imported through `Numos.API.Dangerous`. Access begins with
-`simulation.Dangerous()`. Every custom solver is registered through `simulation.Solvers` and receives the same
-`AtmosSimulation` facade. Most solvers use its detached snapshots and validated mutations; a measured hot path can call
-`simulation.Dangerous().GetChunk(handle)` from that callback to obtain stack-scoped live chunk and gas-channel spans.
+`simulation.Dangerous()`. Every custom solver is registered through `simulation.World.Solvers` and receives an
+`AtmosWorldSolverContext`. Most solvers use its simulations' detached snapshots and validated mutations; a measured hot
+path can call `simulation.Dangerous().GetChunk(handle)` from that callback to obtain stack-scoped live chunk and
+gas-channel spans.
 
 Validated simulation mutations keep pressure/heat-capacity caches, active-voxel indices, sleep state,
 and observable revisions coherent as applicable. A solver should use the dangerous package only when it must directly
@@ -324,54 +462,51 @@ Each frame:
 
 ### 4.2 Solver Pipeline
 
-`AtmosKernel` owns chunk lifecycle, tick state, and pipeline execution. Physics is implemented by focused components
-under `Numos.CoreSim.Solvers`; the kernel does not contain advection, boundary-flow, thermodynamics, or phase-change
-algorithms. A direct `Tick` snapshots the current chunk set; `Update` snapshots it once for its fixed-step batch.
-Every fixed tick captures normalized built-in settings, increments the tick counter, constructs an internal execution
-context containing tick-wide inputs and shared solver storage, and executes the ordered `simulation.Solvers` pipeline.
-Its default stages
-are:
+`AtmosWorld` owns pipeline execution and `AtmosKernel` owns each simulation's chunk lifecycle and tick-local solver
+context. Physics remains implemented by focused components under `Numos.CoreSim.Solvers`. A world tick snapshots the
+enabled world stages, then each registration executes once with all simulations at the same tick boundary.
 
-1. `advection`
-2. `boundary-flow`
-3. `thermodynamics`
-4. `thermal-boundary`
+The default pipeline has seven stages, each an ordinary registered stage that a host can independently disable,
+reorder, or replace:
 
-| Stage | Reads / writes | Tick-scoped output consumed by |
-|-------|----------------|---------------------------------|
-| `advection` | Refreshes pressure/heat-capacity caches; applies intra-chunk gas and energy deltas | Gas boundary events → `boundary-flow` |
-| `boundary-flow` | Applies deterministic cross-chunk gas transfers and refreshes affected caches | None |
-| `thermodynamics` | On even ticks, applies intra-chunk thermal diffusion and condensation | Thermal boundary events → `thermal-boundary` |
-| `thermal-boundary` | On even ticks, applies simultaneous cross-chunk thermal diffusion | None |
+| Stage                        | Work performed                                                                                                             |
+|------------------------------|----------------------------------------------------------------------------------------------------------------------------|
+| `advection`                  | Intra-chunk gas advection                                                                                                  |
+| `explicit-gas-transport`     | Sparse gas transport across explicit links flagged `GasTransport`                                                          |
+| `boundary-flow`              | Cartesian gas transport across ordinary chunk boundaries                                                                   |
+| `thermodynamics`             | Intra-chunk thermal diffusion and phase changes                                                                            |
+| `explicit-thermal-transport` | Sparse thermal transport across explicit links flagged `ThermalTransport`, on the same reduced cadence as `thermodynamics` |
+| `thermal-boundary`           | Cartesian thermal transport across ordinary chunk boundaries                                                               |
+| `gas-reactions`              | Per-cell configured gas reactions                                                                                          |
 
-The producer/consumer order is part of the default contract. Removing or disabling a producer makes its consumer a
-no-op for that tick. Moving a consumer before its producer also makes it observe an empty queue; events are never
-carried into a later tick.
+The relative order of these seven stages is what the default pipeline ships with, not a numerical requirement — a
+host is free to reorder, disable, or unregister any of them. Because `explicit-gas-transport` and
+`explicit-thermal-transport` are ordinary stages rather than a side effect of `advection`/`thermodynamics`, a host
+can disable Numos' own portal/dock physics without touching intra-chunk advection or boundary flow at all, and
+register a replacement in its place. See [Extending portal and dock transport](#extending-portal-and-dock-transport)
+below.
 
 Stages can be enabled, disabled, removed, or restored with `ResetToDefaults`. Custom delegates can be appended or
-inserted before/after any named stage:
+inserted before or after any registered stage:
 
 ```csharp
-simulation.Solvers.RegisterAfter(AtmosBuiltInSolvers.Advection, "game-reactions", solverSimulation =>
+simulation.World.Solvers.RegisterAfter(AtmosBuiltInSolvers.Advection, "game-reactions", context =>
 {
-    foreach (AtmosChunkHandle chunk in solverSimulation.GetChunkHandles())
+    AtmosSimulation simulation = context.Simulations[0];
+    foreach (AtmosChunkHandle chunk in simulation.GetChunkHandles())
     {
-        AtmosChunkSnapshot snapshot = solverSimulation.GetChunkSnapshot(chunk);
+        AtmosChunkSnapshot snapshot = simulation.GetChunkSnapshot(chunk);
         // Inspect the detached snapshot and apply results through validated simulation methods.
     }
 });
 
-simulation.Solvers.SetEnabled(AtmosBuiltInSolvers.Thermodynamics, false);
+simulation.World.Solvers.SetEnabled(AtmosBuiltInSolvers.Thermodynamics, false);
 ```
 
-Pipeline edits made by a callback take effect on the next tick. Gas and thermal boundary queues live in the simulation's
-shared solver storage. Each stage resolves its queue from the execution context before starting workers; solvers do not
-pass collection callbacks to each other. Producers clear the prior batch and tag every event with its tick; consumers
-discard any
-event not produced for their current tick. Disabling or reordering a consumer therefore cannot replay stale work when
-it is later re-enabled. Recursive `Tick`/`Update`, simulation disposal, and chunk registration/removal are rejected
-during a callback because they would invalidate the current chunk snapshot. Perform those lifecycle operations outside
-the solver tick.
+Pipeline edits made by a callback take effect on the next tick. The built-in domains retain their internal boundary
+queues and producer/consumer ordering, but that implementation detail is not a public stage boundary. Recursive
+`Tick`/`Update`, simulation disposal, and chunk registration/removal are rejected during a callback because they would
+invalidate the current chunk snapshot. Perform those lifecycle operations outside the solver tick.
 
 Custom stages share typed dependencies through `simulation.GetOrCreateSolverData<T>(key, factory)`, backed by the same
 storage mechanism. Slots use ordinal string keys or object identity and survive ticks and pipeline edits. Restore
@@ -393,15 +528,16 @@ public sealed class ReactionSolver
 {
     public ReactionSolverConfig Config { get; } = new();
 
-    public void Solve(AtmosSimulation simulation)
+    public void Solve(AtmosWorldSolverContext context)
     {
+        AtmosSimulation simulation = context.Simulations[0];
         // Read snapshots and apply validated mutations through simulation.
     }
 }
 
 var reactionSolver = new ReactionSolver();
 
-simulation.Solvers.RegisterAfter(
+simulation.World.Solvers.RegisterAfter(
     AtmosBuiltInSolvers.Advection,
     "game-reactions",
     reactionSolver.Solve);
@@ -411,6 +547,56 @@ reactionSolver.Config.Rate = 0.5f;
 
 The registered method retains the solver instance, so its typed configuration remains editable after registration.
 The pipeline does not own or dispose custom solvers; callers remain responsible for an `IDisposable` solver's lifetime.
+
+#### Extending portal and dock transport
+
+`explicit-gas-transport` and `explicit-thermal-transport` are Numos' default implementation of transport across
+explicit links (portals, docks, and arbitrary `CreateLinks` batches) — they are not a special case the pipeline
+hardcodes. A host can replace them the same way it would replace any other stage:
+
+```csharp
+// Disable Numos' own portal/dock gas physics world-wide. Advection and boundary flow keep running unaffected.
+simulation.World.Solvers.SetEnabled(AtmosBuiltInSolvers.ExplicitGasTransport, false);
+
+simulation.World.Solvers.RegisterNeighborSolver(
+    "custom-portal-gas",
+    new AtmosNeighborSelection(
+        "game/custom-portal-gas/v1",
+        includeCartesian: false, // this solver only ever cares about explicit links, not ordinary walls
+        static link => (link.Flags & ExplicitLinkFlags.GasTransport) != 0),
+    context =>
+    {
+        foreach (AtmosNeighborEdge edge in context.Topology.GetOwnedEdges())
+        {
+            AtmosDangerousChunk first = context.Dangerous().GetChunk(edge.First);
+            AtmosDangerousChunk second = context.Dangerous().GetChunk(edge.Second);
+            // Read and mutate both endpoints directly to implement custom valve, filter, or reaction behavior.
+            // Remember to skip solid/void endpoints and call Wake() on anything you change — see
+            // "Writing a custom solver that touches portals" above for why the compiled topology doesn't do
+            // either of those for you, and why a cell with several portals needs a shared per-tick limiter.
+        }
+    });
+```
+
+Using `AtmosNeighborSelection.All(...)` here instead would work too, but it also compiles in every ordinary Cartesian
+edge and makes `GetOwnedEdges()` walk all six directions of every voxel in every chunk just to discard them with a
+`Kind != Explicit` check. `All` is for a solver that genuinely wants both kinds of adjacency, like the fire-spread
+example in [using.md](using.md#use-portals-from-a-custom-solver); a portal-only stage should filter with
+`includeCartesian: false` instead.
+
+`ExplicitLinkFlags` reserves `GasTransport` and `ThermalTransport` for Numos' own stages, but a `[Flags] byte` has
+six more bits available. A link can carry a host-defined bit — `(ExplicitLinkFlags)(1 << 2)`, for example — purely
+so a host-registered `AtmosExplicitLinkSelector` can pick it out. Numos' built-in stages only ever look at the bits
+they know about, so a link can:
+
+- mix a built-in capability with a host-defined one (default gas physics plus a custom effect layered on top with
+  `RegisterAfter`),
+- use only a host-defined bit to opt out of default physics entirely for that one link while every other portal
+  keeps using Numos' implementation, or
+- disable a built-in stage world-wide (as above) and implement every portal's physics from scratch.
+
+This makes portal and dock transport a genuine extension point rather than a fixed behavior: a host is never stuck
+choosing between Numos' bulk-pressure model and no transport at all.
 
 #### Chunk-owned solver arrays
 
@@ -428,15 +614,16 @@ ordinal equality, so a compatible solver can reacquire restored data in another 
 key object. Transient fields can also use retained object keys, which compare by reference identity.
 
 ```csharp
-simulation.Solvers.Register("fire-v1", world =>
+simulation.World.Solvers.Register("fire-v1", context =>
 {
-    foreach (var chunk in world.GetChunkHandles())
+    AtmosSimulation simulation = context.Simulations[0];
+    foreach (var chunk in simulation.GetChunkHandles())
     {
-        var exposure = world.GetOrCreateChunkSolverFlatArray<float>(
+        var exposure = simulation.GetOrCreateChunkSolverFlatArray<float>(
             chunk, "fire/exposure", captureForRollback: true);
         exposure[new Int3(0, 0, 0)] += 1f;
 
-        float[] scratch = world.GetOrCreateChunkSolverArray<float>(
+        float[] scratch = simulation.GetOrCreateChunkSolverArray<float>(
             chunk, "fire/scratch", captureForRollback: false);
         Array.Clear(scratch);
     }
@@ -466,11 +653,12 @@ Direct array writes are not external recorded operations; checkpoints save them,
 Solvers that have a measured need to avoid copies of physical fields can opt into live storage from the same callback:
 
 ```csharp
-simulation.Solvers.RegisterAfter(AtmosBuiltInSolvers.Advection, "fast-reaction", solverSimulation =>
+simulation.World.Solvers.RegisterAfter(AtmosBuiltInSolvers.Advection, "fast-reaction", context =>
 {
-    foreach (AtmosChunkHandle handle in solverSimulation.GetChunkHandles())
+    AtmosSimulation simulation = context.Simulations[0];
+    foreach (AtmosChunkHandle handle in simulation.GetChunkHandles())
     {
-        AtmosDangerousChunk chunk = solverSimulation.Dangerous().GetChunk(handle);
+        AtmosDangerousChunk chunk = simulation.Dangerous().GetChunk(handle);
         Span<float> oxygen = chunk.GetGasChannel(0).Moles;
         // Raw writes are unchecked. Repair affected caches/topology and call MarkChanged as required.
     }
@@ -481,7 +669,10 @@ Gas injection through `AtmosSimulation.AddGasToVoxel` recalculates the target vo
 composition before temperature mixing. Internal boundary flow uses the same atomic injection operation with the
 normalized gas properties and pressure coefficient captured for that tick.
 
-The four default stages are described below.
+The advection, thermodynamics, and boundary-flow domains are described in detail below; their internal solver phases
+remain ordered as shown where relevant. Explicit-link transport across portals and docks is covered separately in
+[Extending portal and dock transport](#extending-portal-and-dock-transport) above, and gas reactions are documented at
+the pipeline-stage level only — see `AtmosBuiltInSolvers.GasReactions`.
 
 ### 4.3 Stage 1 — Pressure Advection
 
@@ -676,9 +867,9 @@ Unit tests confirm convergence to sleep for L-shaped, donut-shaped, and zigzag r
 
 ---
 
-## 8. Phase Changes (Condensation)
+## 7. Phase Changes (Condensation)
 
-### 8.1 Clausius-Clapeyron Saturation Model
+### 7.1 Clausius-Clapeyron Saturation Model
 
 Condensation is modeled using a saturation-vapor-pressure approach based on the Clausius-Clapeyron equation:
 
@@ -714,7 +905,7 @@ select the condensed amount and to apply its energy change, so the solve include
 vapor as well as the resulting rise in saturation pressure. The approximation and its assumptions match the
 integrated ideal-vapor derivation summarized in [NISTIR 5321](https://nvlpubs.nist.gov/nistpubs/Legacy/IR/nistir5321.pdf).
 
-### 8.2 Phase-Change Internal-Energy Balance
+### 7.2 Phase-Change Internal-Energy Balance
 
 Condensation removes both the condensed gas's heat capacity and the sensible energy that gas carried. Clausius–Clapeyron uses vaporization enthalpy, but this is a constant-volume internal-energy balance, so the released energy per mole is approximated as `ΔU_vap = max(0, ΔH_vap - RT)`. Let `n_condensed` be the number of moles condensed and `C_after` the heat capacity recalculated from the remaining composition:
 
@@ -743,7 +934,7 @@ coordinate it with a custom solver.
 
 ---
 
-## 9. Networking & Replication
+## 8. Networking & Replication
 
 The reference implementation includes stubs and data structures for network synchronization, but the networking logic itself is not implemented.
 
@@ -785,7 +976,7 @@ All networking methods are stubs with comments indicating where real implementat
 
 ---
 
-## 10. Known Flaws & Limitations
+## 9. Known Flaws & Limitations
 
 ### Numerical
 
@@ -803,7 +994,7 @@ generate array-allocation pressure.
 
 ---
 
-## 11. Porting Guidance
+## 10. Porting Guidance
 
 To implement this system in another engine or language, start from the core module described in this document:
 - `AtmosSimulation` — the supported public facade.

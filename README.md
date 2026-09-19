@@ -11,6 +11,7 @@ in the `0.x` series and may be published as prereleases (for others to just impo
 ## Some Highlights/Lowlights
 
 - First-class 3D support, voxel based
+- Support for non-Euclidean, non-trivial topology (portals across simulations)
 - Arbitrary gas additions at runtime (SoAs)
 - Engine-agnostic, with a supported `Numos.API` facade over an internal simulation kernel
 - Multithreaded intra-chunk advection and thermodynamics

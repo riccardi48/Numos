@@ -137,7 +137,9 @@ internal sealed partial class AtmosKernel
                 throw new InvalidOperationException($"A chunk is already registered at {chunk.GridPosition}.");
 
             chunk.DenseId = _freeChunkDenseIds.Count > 0 ? _freeChunkDenseIds.Pop() : _nextChunkDenseId++;
+            // Chunk starts awake
             WakeSleepingNeighbors(chunk.GridPosition);
+            chunk.Wake();
             _chunkCollectionRevision++;
             if (ShouldRecord) RecordOperation(new CreateChunkOperation(chunk.GridPosition));
         }

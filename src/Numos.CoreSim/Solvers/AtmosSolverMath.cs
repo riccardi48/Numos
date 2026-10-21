@@ -13,7 +13,7 @@ internal static class AtmosSolverMath
     /// </summary>
     internal static Pascal CalculatePressure(IAtmosConfig config, Mole moles, Kelvin temperature)
     {
-        Debug.Assert(float.IsFinite(moles) && moles >= 0f);
+        Debug.Assert(IsFinitePositive(moles));
         return moles * config.GetValidatedTemp(temperature) * config.PressurePerMoleKelvin;
     }
 
